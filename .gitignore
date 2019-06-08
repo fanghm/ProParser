@@ -1,0 +1,18 @@
+#project files
+.vscode
+*.cbp
+
+#files
+*.o
+*.exe
+*.csv
+*.layout
+*.depend
+
+#folders
+bin
+obj
+
+# temp code
+p.cpp
+main.cpp
