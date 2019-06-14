@@ -40,7 +40,7 @@ void show_fields(vector<string> &fields) {
     for (string val: fields) {
         cout << (n >= EXPORT_FIELD_NUM ? "__UNDEF__" : EXPORT_FIELDS[n++]) << ":\t\t||" << val.substr(0, 50) << "||\n";
     }
-    cout << "<@@@\n";
+    cout << "<@@@\n\n";
 }
 
 void show_table(vector<vector<string>> const &matrix) {
@@ -80,30 +80,51 @@ void parse_row(const string &str, vector<string> &fields, vector<vector<string>>
                 fields.push_back(str);
                 show_fields(fields);
             } else {
-                fields.back() = fields.back() + "\n" + str; // append this row to the last field
+                fields.back() = fields.back() + "\n" + str; // append this new row to the last field
             }
         }
     } else {
         if (state == CSVState::UnquotedField) {
+            // handle left part
             if (pos > 0)
                 split(str.substr(0, pos), back_inserter(fields));
 
+            // recursively handle right part
             state = CSVState::QuotedField;
             show_fields(fields);
             parse_row(str.substr(pos+1), fields, table, true);
         } else {
-            if (righAfterQuotation) {
-                fields.push_back(str.substr(0, pos));
-                show_fields(fields);
+            if (str.size() > pos + 4 && str[pos+1] == '"') { // double quote, parse to end of it
+                size_t p = str.find("\"\"", pos+2);
+                cout << "######### DOUBLE QUOTATION #########" << pos << "|" << p << endl;
+                if (string::npos != p) {
+                    if (righAfterQuotation) {
+                        fields.push_back(str.substr(0, p+2));
+                    } else {
+                        fields.back() = fields.back() + "\n" + str.substr(0, p+2); // append this new row to the last field
+                    }
+                    parse_row(str.substr(p+2), fields, table, righAfterQuotation);
+                } else {
+                    cout << "ERROR: no match double quotation mark at same line" << endl;
+                    return;
+                }
             } else {
-                fields.back() = fields.back() + "\n" + str.substr(0, pos); // append quotation-mark's left part to the last field
-            }
+                // handle left part
+                if (righAfterQuotation) {
+                    fields.push_back(str.substr(0, pos));
+                    show_fields(fields);
+                } else {
+                    fields.back() = fields.back() + "\n" + str.substr(0, pos); // append quotation-mark's left part to the last field
+                }
 
-            state = CSVState::UnquotedField;
-            if (pos == str.size()-1) {    // quotation mark is at eol
-                if(!saveRecord(fields, table)) return;
-            } else {
-                parse_row(str.substr(pos+2), fields, table);    // TODO: better to find next comma after quotation mark
+                if (pos == str.size()-1) {    // quotation mark is at eol
+                    state = CSVState::UnquotedField;
+                    if(!saveRecord(fields, table)) return;
+                } else {
+                    // recursively handle right part
+                    state = CSVState::UnquotedField;
+                    parse_row(str.substr(pos+2), fields, table);    // TODO: better to find next comma after quotation mark
+                }
             }
         }
     }
@@ -145,17 +166,16 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    string s = "Field, with \"embedded quote\"\n and, new line";
-    vector<string> fields;
-    split(s, back_inserter(fields));
-    show_fields(fields);
-
-    split("abc,def,\nend", back_inserter(fields));
-    show_fields(fields);
-
     string filename(argv[1]);
-    vector<vector<string>> table = parse_csv(filename);
+    vector<vector<string>> table;
+
+    table = parse_csv(filename);
     show_table(table);
 
+    for (size_t i=0; i<9; i++) {
+        table = parse_csv(SAMPLE_FILES[i]);
+        show_table(table);
+        getchar();
+    }
     return 0;
 }
