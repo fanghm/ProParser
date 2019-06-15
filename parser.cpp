@@ -4,14 +4,60 @@
 #include <sstream>
 #include <vector>
 #include <iterator>
+#include <regex>
 #include "defines.h"
 
 using namespace std;
 
 enum class CSVState {
     UnquotedField,
-    QuotedField,
-    QuotedQuote
+    QuotedField
+};
+
+class PrInfo {
+public:
+    PrInfo():transfer_times(0), pingpong_times(0) {}
+    PrInfo(vector<string> fields) {
+        this->pr_id         = fields[0];
+        this->gic           = fields[4];
+        this->rpt_date      = fields[3];
+        this->author        = fields[11];
+        this->author_grp    = fields[12];
+        this->state         = fields[6];
+
+        analyse_rev_his(fields[15]);
+    }
+
+    // calc Transfer/Solving Path, Transfer/Pingpong times
+    void analyse_rev_his(string& revision) {
+        string pattern = "The group in charge changed from ([[:upper:]_]+) to ([[:upper:]_]+)";
+        regex r(pattern);
+
+        bool first = true;
+        for(sregex_iterator it(revision.begin(), revision.end(), r), end_it; it != end_it; ++it) {
+            // cout << it->format("$1") << "|" << it->format("$2") << endl;
+            if (first) {
+                transfer_path.push_back(it->format("$2"));
+                first = false;
+            }
+        }
+
+        std::reverse(transfer_path.begin(),transfer_path.end());
+        solving_path = transfer_path;
+    }
+
+private:
+    string pr_id;
+    string gic;
+    string rpt_date;
+    string author;
+    string author_grp;
+    string state;
+
+    vector<string> transfer_path;
+    vector<string> solving_path;
+    size_t transfer_times;
+    size_t pingpong_times;
 };
 
 // globals
@@ -54,6 +100,69 @@ void show_table(vector<vector<string>> const &matrix) {
 	}
 }
 
+void serize_header(ofstream& json_file) {
+    json_file << "{\n\t\"records\": [\n";
+}
+
+void serize_footer(ofstream& json_file, size_t total) {
+    json_file << "\n\t],\n\t\"total\": " << total << "\n}";
+    json_file.flush();
+    json_file.close();
+}
+
+void serize_vector(ofstream& json_file, vector<string> groups) {
+    bool first = true;
+    for (string grp: groups) {
+        if (!first)
+            json_file << ",\n";
+        else
+            first = false;
+
+        json_file << "\t\t\t\t\""  << grp << "\"";
+    }
+
+    json_file << JSON_ARRAY_SUFFIX;
+}
+
+void serize_record(ofstream& json_file, vector<vector<string>> &table) {
+    bool first = true;
+    for (vector<string> record: table) {
+        if (!first)
+            json_file << ",\n";
+        else
+            first = false;
+
+        json_file << "\t\t{\n";
+        json_file << "\t\t\t" << "\"PR ID\": \""            << record[0] << JSON_LINE_SUFFIX;
+        json_file << "\t\t\t" << "\"Group In Charge\": \""  << record[4] << JSON_LINE_SUFFIX;
+        json_file << "\t\t\t" << "\"Reported Date\": \""    << record[3] << JSON_LINE_SUFFIX;
+        json_file << "\t\t\t" << "\"Author\": \""           << record[11] << JSON_LINE_SUFFIX;
+        json_file << "\t\t\t" << "\"Author Group\": \""     << record[12] << JSON_LINE_SUFFIX;
+        json_file << "\t\t\t" << "\"State\": \""            << record[6] << JSON_LINE_SUFFIX;
+
+        json_file << "\t\t\t" << "\"Transfer Path\": [\n";
+        serize_vector(json_file, analyse_rev_his(record[15]));
+
+        json_file << "\t\t\t" << "\"Transfer times\": 1,\n";
+
+        json_file << "\t\t\t" << "\"Solving Path\": [\n";
+        serize_vector(json_file, analyse_rev_his(record[15]));
+
+        json_file << "\t\t\t" << "\"Pingpong times\": 0,\n";
+        json_file << "\t\t\t" << "\"Attached PRs\": \""     << record[13] << JSON_LINE_SUFFIX;
+        json_file << "\t\t\t" << "\"Attached\": \"no\",\n";
+        json_file << "\t\t\t" << "\"Attached To\": \"\"\n";
+        json_file << "\t\t}";
+    }
+}
+
+void serize_table(string& json_fname, vector<vector<string>> &table) {
+    ofstream json_file(json_fname);
+    serize_header(json_file);
+    serize_record(json_file, table);
+    serize_footer(json_file, table.size());
+}
+
 bool saveRecord(vector<string> &fields, vector<vector<string>> &table) {
     if (fields.size() != EXPORT_FIELD_NUM) {
         cout << "Size ERROR!" << endl;
@@ -62,6 +171,7 @@ bool saveRecord(vector<string> &fields, vector<vector<string>> &table) {
 
     table.push_back(fields);
     fields.clear();
+
     return true;
 }
 
@@ -166,16 +276,28 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    string filename(argv[1]);
+//	string pattern="The group in charge changed from ([[:upper:]_]+) to ([[:upper:]_]+)";
+//	std::string str("Oulu) The group in charge changed from ECE_DEV_FOU_OAM_MZ to NIESSCBTSMZOAM. Reason for Transfer: Correction is available aready by cBTS team. Just to find the right CB., 2018-06-08 09:45 Hautala, Mika (Nokia - FI/Oulu) edited. Changed field(s): R&D Information, 2018-06-08 09:30 Romppanen, Reijo (Nokia - FI/Oulu) The group in charge changed from RCPSEC to ECE_DEV_FOU_OAM_MZ. Re");
+//	regex r(pattern);
+//
+//	for(sregex_iterator it(str.begin(), str.end(), r), end_it; it!=end_it; ++it) {
+//		std::cout << it->str() << std::endl;
+//		cout << it->format("$1") << "|" << it->format("$2") << endl;
+//	}
+//
+//    return 0;
+
+    string csv_fname(argv[1]);
+    string json_fname = csv_fname.substr(0, csv_fname.find_last_of('.')) + "_result_my.json";
     vector<vector<string>> table;
 
-    table = parse_csv(filename);
-    show_table(table);
-
-    for (size_t i=0; i<9; i++) {
-        table = parse_csv(SAMPLE_FILES[i]);
-        show_table(table);
-        getchar();
-    }
+    table = parse_csv(csv_fname);
+    //show_table(table);
+    serize_table(json_fname, table);
+//    for (size_t i=0; i<9; i++) {
+//        table = parse_csv(SAMPLE_FILES[i]);
+//        show_table(table);
+//        getchar();
+//    }
     return 0;
 }
