@@ -1,4 +1,5 @@
-#include<iostream>
+#include <iostream>
+#include <iomanip>
 #include <fstream>
 #include<string>
 #include <sstream>
@@ -9,41 +10,152 @@
 
 using namespace std;
 
+// globals
+const char CSV_DELIMITER = ',';
+const size_t EXPORT_FIELD_NUM = 17;
+const string HEADER_START_FIELD = "Problem ID";
+
 enum class CSVState {
     UnquotedField,
     QuotedField
 };
 
+CSVState state = CSVState::UnquotedField;
+
+template <typename ...Args>
+inline std::string format_string(const char* format, Args... args) {
+    constexpr size_t oldlen = BUFSIZ;
+    char buffer[oldlen];  // 默认栈上的缓冲区
+
+    size_t newlen = snprintf(&buffer[0], oldlen, format, args...);
+    newlen++;  // 算上终止符'\0'
+
+    if (newlen > oldlen) {  // 默认缓冲区不够大，从堆上分配
+        std::vector<char> newbuffer(newlen);
+        snprintf(newbuffer.data(), newlen, format, args...);
+        return std::string(newbuffer.data());
+    }
+
+    return buffer;
+}
+
+void show_fields(vector<string> &fields) {
+    size_t n = 0;
+    cout << "\t@@@>[FIELDS] ";
+    for (string val: fields) {
+        cout << (n >= EXPORT_FIELD_NUM ? "__UNDEF__" : EXPORT_FIELDS[n++]) << ":\t\t||" << val.substr(0, 50) << "||\n";
+    }
+    cout << "<@@@\n\n";
+}
+
+/*--- Class to analyze, store and output field information ---*/
 class PrInfo {
 public:
     PrInfo():transfer_times(0), pingpong_times(0) {}
-    PrInfo(vector<string> fields) {
+
+    PrInfo(vector<string>& fields) {
+        cout << "###Within PrInfo: " << endl;
+        show_fields(fields);
+
         this->pr_id         = fields[0];
         this->gic           = fields[4];
         this->rpt_date      = fields[3];
         this->author        = fields[11];
         this->author_grp    = fields[12];
         this->state         = fields[6];
+        this->attached_prs  = fields[13];
 
         analyse_rev_his(fields[15]);
+        analyse_attach();
+
+        this->jsonize(cout);
+        cout << "###Within PrInfo###" << endl;
     }
 
-    // calc Transfer/Solving Path, Transfer/Pingpong times
+    void jsonize(ostream& out) const {
+        out << setw(4) << " " << "{\n";
+        //out.setf(ios::unitbuf);
+
+        jsonize_field(out, "PR ID", this->pr_id, true);
+        jsonize_field(out, "Group In Charge", this->gic);
+        jsonize_field(out, "Reported Date", this->rpt_date);
+        jsonize_field(out, "Author", this->author);
+        jsonize_field(out, "Author Group", this->author_grp);
+        jsonize_field(out, "State", this->state);
+
+        jsonize_field(out, "Transfer Path", this->transfer_path);
+        jsonize_field(out, "Transfer times", this->transfer_times);
+        jsonize_field(out, "Solving Path", this->solving_path);
+        jsonize_field(out, "Pingpong times", this->pingpong_times);
+
+        jsonize_field(out, "Attached PRs", this->attached_prs);
+        jsonize_field(out, "Attached", this->attached);
+        jsonize_field(out, "Attached To", this->attached_to);
+
+        out << "\n" << setw(4) << " " << "}";
+    }
+
+private:
+    // Analyze revision history to get Transfer/Solving Path & Transfer/Pingpong times
     void analyse_rev_his(string& revision) {
-        string pattern = "The group in charge changed from ([[:upper:]_]+) to ([[:upper:]_]+)";
+        string pattern = "The group in charge changed from ([[:upper:]_[:digit:]]+) to ([[:upper:]_[:digit:]]+)";
         regex r(pattern);
 
         bool first = true;
+        string last_group;
         for(sregex_iterator it(revision.begin(), revision.end(), r), end_it; it != end_it; ++it) {
-            // cout << it->format("$1") << "|" << it->format("$2") << endl;
+            cout << "###Groups###" << it->format("$1") << "->" << it->format("$2") << endl;
             if (first) {
                 transfer_path.push_back(it->format("$2"));
+                transfer_path.push_back(it->format("$1"));
                 first = false;
+            } else {
+                if (0 != last_group.compare(it->format("$2")))
+                    transfer_path.push_back(it->format("$2"));
+
+                transfer_path.push_back(it->format("$1"));
             }
+            last_group = it->format("$1");
         }
 
         std::reverse(transfer_path.begin(),transfer_path.end());
-        solving_path = transfer_path;
+        transfer_times = transfer_path.size();
+
+        solving_path = transfer_path;   //TODO
+        pingpong_times = 0;
+        jsonize_field(cout, "@@path: ", transfer_path);//for dbg
+    }
+
+    void analyse_attach() {
+        this->attached = "no";
+        this->attached_to = "";
+    }
+
+    void jsonize_field(ostream& out, const string key, const string value, bool first = false) const {
+        if (!first) out << ",\n";
+        out << setw(6) << " " << format_string("\"%s\": \"%s\"", key.c_str(), value.c_str());
+    }
+
+    void jsonize_field(ostream& out, const string& key, size_t value, bool first = false) const {
+        if (!first) out << ",\n";
+        out << setw(6) << " " << format_string("\"%s\": %d", key.c_str(), value);
+    }
+
+    void jsonize_field(ostream& out, const string& key, const vector<string>& values) const {
+        out << ",\n";
+        out << setw(6) << " " << format_string("\"%s\": [\n", key.c_str());
+
+        bool first = true;
+        for (string grp: values) {
+            if (!first)
+                out << ",\n";
+            else
+                first = false;
+
+            out << setw(8) << " " << format_string("\"%s\"", grp.c_str());
+        }
+
+        out << "\n" << setw(6) << " " << "]";
     }
 
 private:
@@ -56,17 +168,101 @@ private:
 
     vector<string> transfer_path;
     vector<string> solving_path;
+
     size_t transfer_times;
     size_t pingpong_times;
+
+    string attached_prs;
+    string attached;
+    string attached_to;
 };
 
-// globals
-const char CSV_DELIMITER = ',';
-CSVState state = CSVState::UnquotedField;
-const string HEADER_START_FIELD = "Problem ID";
+/*--- CSV file Parser ---*/
+class CsvParser {
+public:
+    CsvParser() {}
+
+    ~CsvParser() {
+        for (PrInfo* pr: _pr_list)
+            delete pr;
+    }
+
+    void parse(string& csv_fname);
+    void jsonize(ostream& out) const;
+
+private:
+    bool save(vector<string>& fields);
+    void parse_str(const string& str, vector<string>& fields, bool righAfterQuotation = false);
+
+    template<typename Out>
+    void split(const string &s, Out result, char delim = CSV_DELIMITER) const;
+
+    // for output as json
+    void jsonize_start(ostream& json_file) const;
+    void jsonize_end(ostream& json_file, size_t total) const;
+
+    // for debugging
+    //void show_fields(vector<string> &fields) const;
+
+private:
+    vector<PrInfo*> _pr_list;
+};
+
+//===============================================================================
+void CsvParser::jsonize(ostream& out) const {
+    jsonize_start(out);
+
+    bool first = true;
+    for (PrInfo* pr_info: _pr_list) {
+        if (!first)
+            out << ",\n";
+        else
+            first = false;
+
+        pr_info->jsonize(out);
+    }
+
+    jsonize_end(out, _pr_list.size());
+}
+
+void CsvParser::jsonize_start(ostream& json_file) const {
+    json_file << "{\n  \"records\": [\n";
+}
+
+void CsvParser::jsonize_end(ostream& json_file, size_t total) const {
+    json_file << "\n  ],\n  \"total\": " << total << "\n}";
+    json_file.flush();
+}
+
+void CsvParser::parse(string& csv_fname) {
+    string line;
+    vector<string> fields;
+
+    bool skip_header = true;
+    ifstream in(csv_fname);
+
+    while (!in.eof()) {
+        getline(in, line);
+        if (in.bad() || in.fail()) {
+            break;
+        }
+
+        if (line.empty()) continue;
+
+        if (skip_header) {
+            if(0 == HEADER_START_FIELD.compare(line.substr(0, HEADER_START_FIELD.size()))) {
+                skip_header = false;
+            }
+            continue;
+        }
+
+        cout << "\n\nParse line: " << line << endl;
+        parse_str(line, fields);
+    }
+}
 
 template<typename Out>
-void split(const string &s, Out result, char delim = CSV_DELIMITER) {
+void CsvParser::split(const string &s, Out result, char delim) const {
     stringstream ss(s);
     string item;
     while (getline(ss, item, delim)) {
@@ -74,109 +270,22 @@ void split(const string &s, Out result, char delim = CSV_DELIMITER) {
     }
 }
 
-vector<string> split(const string &s, char delim = CSV_DELIMITER) {
-    vector<string> elems;
-    split(s, back_inserter(elems), delim);
-    return elems;
-}
-
-void show_fields(vector<string> &fields) {
-    size_t n = 0;
-    cout << "\t@@@>[FIELDS] ";
-    for (string val: fields) {
-        cout << (n >= EXPORT_FIELD_NUM ? "__UNDEF__" : EXPORT_FIELDS[n++]) << ":\t\t||" << val.substr(0, 50) << "||\n";
-    }
-    cout << "<@@@\n\n";
-}
-
-void show_table(vector<vector<string>> const &matrix) {
-    size_t m = 0, n = 0;
-	for (vector<string> row: matrix) {
-        cout << "\n-->" << m++ << "<--\n";
-        n=0;
-		for (string val: row) {
-			cout << (n >= EXPORT_FIELD_NUM ? "__UNDEFINED__" : EXPORT_FIELDS[n++]) << ":\t\t||" << val.substr(0, 50) << "||\n";
-		}
-	}
-}
-
-void serize_header(ofstream& json_file) {
-    json_file << "{\n\t\"records\": [\n";
-}
-
-void serize_footer(ofstream& json_file, size_t total) {
-    json_file << "\n\t],\n\t\"total\": " << total << "\n}";
-    json_file.flush();
-    json_file.close();
-}
-
-void serize_vector(ofstream& json_file, vector<string> groups) {
-    bool first = true;
-    for (string grp: groups) {
-        if (!first)
-            json_file << ",\n";
-        else
-            first = false;
-
-        json_file << "\t\t\t\t\""  << grp << "\"";
-    }
-
-    json_file << JSON_ARRAY_SUFFIX;
-}
-
-void serize_record(ofstream& json_file, vector<vector<string>> &table) {
-    bool first = true;
-    for (vector<string> record: table) {
-        if (!first)
-            json_file << ",\n";
-        else
-            first = false;
-
-        json_file << "\t\t{\n";
-        json_file << "\t\t\t" << "\"PR ID\": \""            << record[0] << JSON_LINE_SUFFIX;
-        json_file << "\t\t\t" << "\"Group In Charge\": \""  << record[4] << JSON_LINE_SUFFIX;
-        json_file << "\t\t\t" << "\"Reported Date\": \""    << record[3] << JSON_LINE_SUFFIX;
-        json_file << "\t\t\t" << "\"Author\": \""           << record[11] << JSON_LINE_SUFFIX;
-        json_file << "\t\t\t" << "\"Author Group\": \""     << record[12] << JSON_LINE_SUFFIX;
-        json_file << "\t\t\t" << "\"State\": \""            << record[6] << JSON_LINE_SUFFIX;
-
-        json_file << "\t\t\t" << "\"Transfer Path\": [\n";
-        serize_vector(json_file, analyse_rev_his(record[15]));
-
-        json_file << "\t\t\t" << "\"Transfer times\": 1,\n";
-
-        json_file << "\t\t\t" << "\"Solving Path\": [\n";
-        serize_vector(json_file, analyse_rev_his(record[15]));
-
-        json_file << "\t\t\t" << "\"Pingpong times\": 0,\n";
-        json_file << "\t\t\t" << "\"Attached PRs\": \""     << record[13] << JSON_LINE_SUFFIX;
-        json_file << "\t\t\t" << "\"Attached\": \"no\",\n";
-        json_file << "\t\t\t" << "\"Attached To\": \"\"\n";
-        json_file << "\t\t}";
-    }
-}
-
-void serize_table(string& json_fname, vector<vector<string>> &table) {
-    ofstream json_file(json_fname);
-    serize_header(json_file);
-    serize_record(json_file, table);
-    serize_footer(json_file, table.size());
-}
-
-bool saveRecord(vector<string> &fields, vector<vector<string>> &table) {
+bool CsvParser::save(vector<string> &fields) {
     if (fields.size() != EXPORT_FIELD_NUM) {
-        cout << "Size ERROR!" << endl;
+        cout << "ERROR: failed to parse out correct field number!" << endl;
         return false;
     }
 
-    table.push_back(fields);
+    _pr_list.push_back(new PrInfo(fields));
+    //_prlist.front()->jsonize(cout);
+    //getchar();  //dbg
     fields.clear();
 
     return true;
 }
 
 // recursively parse a string to exact fields
-void parse_row(const string &str, vector<string> &fields, vector<vector<string>> &table, bool righAfterQuotation = false) {
+void CsvParser::parse_str(const string &str, vector<string>& fields, bool righAfterQuotation) {
     cout << "\t@Handle " << ((state == CSVState::UnquotedField) ? "unquoted": "quoted") << "string: " << str.substr(0, 50) << "..." << endl;
     size_t pos = str.find_first_of('"');
     if (string::npos == pos) {
@@ -184,7 +293,7 @@ void parse_row(const string &str, vector<string> &fields, vector<vector<string>>
             split(str, back_inserter(fields));
             show_fields(fields);
 
-            if(!saveRecord(fields, table)) return;
+            if(!save(fields)) return;
         } else {
             if (righAfterQuotation) {
                 fields.push_back(str);
@@ -202,7 +311,7 @@ void parse_row(const string &str, vector<string> &fields, vector<vector<string>>
             // recursively handle right part
             state = CSVState::QuotedField;
             show_fields(fields);
-            parse_row(str.substr(pos+1), fields, table, true);
+            parse_str(str.substr(pos+1), fields, true);
         } else {
             if (str.size() > pos + 4 && str[pos+1] == '"') { // double quote, parse to end of it
                 size_t p = str.find("\"\"", pos+2);
@@ -213,7 +322,7 @@ void parse_row(const string &str, vector<string> &fields, vector<vector<string>>
                     } else {
                         fields.back() = fields.back() + "\n" + str.substr(0, p+2); // append this new row to the last field
                     }
-                    parse_row(str.substr(p+2), fields, table, righAfterQuotation);
+                    parse_str(str.substr(p+2), fields, righAfterQuotation);
                 } else {
                     cout << "ERROR: no match double quotation mark at same line" << endl;
                     return;
@@ -229,75 +338,41 @@ void parse_row(const string &str, vector<string> &fields, vector<vector<string>>
 
                 if (pos == str.size()-1) {    // quotation mark is at eol
                     state = CSVState::UnquotedField;
-                    if(!saveRecord(fields, table)) return;
+                    if(!save(fields)) return;
                 } else {
                     // recursively handle right part
                     state = CSVState::UnquotedField;
-                    parse_row(str.substr(pos+2), fields, table);    // TODO: better to find next comma after quotation mark
+                    parse_str(str.substr(pos+2), fields);    // TODO: better to find next comma after quotation mark
                 }
             }
         }
     }
 }
 
-vector<vector<string> > parse_csv(string& file) {
-    vector<vector<string> > table;
-    vector<string> fields;
-    string row;
-
-    bool skip_header = true;
-    ifstream in(file);
-    while (!in.eof()) {
-        getline(in, row);
-        if (in.bad() || in.fail()) {
-            break;
-        }
-
-        if (row.empty()) continue;
-
-        if (skip_header) {
-            if(0 == HEADER_START_FIELD.compare(row.substr(0, HEADER_START_FIELD.size()))) {
-                // TODO: parser header?
-                skip_header = false;
-            }
-            continue;
-        }
-
-        cout << "\n\n==>ROW: " << row << endl;
-        parse_row(row, fields, table);
-    }
-
-    return table;
+void jsonize_field(ostream& out, const string key, const string value, bool first = false) {
+    if (!first) out << ",\n";
+    out << setw(6) << " " << format_string("%s\": \"%s\"", key.c_str(), value.c_str());
 }
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
-        cout << "Usage: \n\t" << argv[0] << " <exported_pr_csv_file>\n" << endl;
+        cout << "Usage: \n\t" << argv[0] << " <path_to_csv_file>\n" << endl;
         return -1;
     }
 
-//	string pattern="The group in charge changed from ([[:upper:]_]+) to ([[:upper:]_]+)";
-//	std::string str("Oulu) The group in charge changed from ECE_DEV_FOU_OAM_MZ to NIESSCBTSMZOAM. Reason for Transfer: Correction is available aready by cBTS team. Just to find the right CB., 2018-06-08 09:45 Hautala, Mika (Nokia - FI/Oulu) edited. Changed field(s): R&D Information, 2018-06-08 09:30 Romppanen, Reijo (Nokia - FI/Oulu) The group in charge changed from RCPSEC to ECE_DEV_FOU_OAM_MZ. Re");
-//	regex r(pattern);
-//
-//	for(sregex_iterator it(str.begin(), str.end(), r), end_it; it!=end_it; ++it) {
-//		std::cout << it->str() << std::endl;
-//		cout << it->format("$1") << "|" << it->format("$2") << endl;
-//	}
-//
+//    jsonize_field(cout, "TEST", "TEST-VALUE");
 //    return 0;
 
     string csv_fname(argv[1]);
     string json_fname = csv_fname.substr(0, csv_fname.find_last_of('.')) + "_result_my.json";
-    vector<vector<string>> table;
 
-    table = parse_csv(csv_fname);
-    //show_table(table);
-    serize_table(json_fname, table);
-//    for (size_t i=0; i<9; i++) {
-//        table = parse_csv(SAMPLE_FILES[i]);
-//        show_table(table);
-//        getchar();
-//    }
+    CsvParser parser;
+    parser.parse(csv_fname);
+    //parser.jsonize(cout);
+
+    ofstream json_file(json_fname);
+    parser.jsonize(json_file);
+    json_file.close();
+
     return 0;
 }
