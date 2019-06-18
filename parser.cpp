@@ -1,19 +1,42 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-#include<string>
+#include <string>
 #include <sstream>
 #include <vector>
+#include <set>
+#include <map>
 #include <iterator>
 #include <regex>
-#include "defines.h"
 
 using namespace std;
 
 // globals
+bool DEBUG = false;
 const char CSV_DELIMITER = ',';
-const size_t EXPORT_FIELD_NUM = 17;
+
 const string HEADER_START_FIELD = "Problem ID";
+const std::string EXPORT_FIELDS[] = {
+    "Problem ID",       //0: PR ID
+    "Title",
+    "Description",
+    "Reported Date",    //3
+    "Group in Charge",  //4
+    "Feature",
+    "State",            //6
+    "Severity",
+    "Top Importance",
+    "Release",
+    "R&D Information",
+    "Author",           //11
+    "Author Group",     //12
+    "Attached PRs",     //13
+    "Responsible Person",
+    "Revision History", //15
+    "Target Build"
+};
+
+const size_t EXPORT_FIELD_NUM = sizeof(EXPORT_FIELDS) / sizeof(std::string);    //17
 
 enum class CSVState {
     UnquotedField,
@@ -23,23 +46,25 @@ enum class CSVState {
 CSVState state = CSVState::UnquotedField;
 
 template <typename ...Args>
-inline std::string format_string(const char* format, Args... args) {
-    constexpr size_t oldlen = BUFSIZ;
-    char buffer[oldlen];  // 默认栈上的缓冲区
+inline string format_string(const char* format, Args... args) {
+    constexpr size_t len = BUFSIZ;
+    char buffer[len];  // def buf on stack
 
-    size_t newlen = snprintf(&buffer[0], oldlen, format, args...);
-    newlen++;  // 算上终止符'\0'
+    size_t length = snprintf(&buffer[0], len, format, args...);
+    length++;   // count in '\0'
 
-    if (newlen > oldlen) {  // 默认缓冲区不够大，从堆上分配
-        std::vector<char> newbuffer(newlen);
-        snprintf(newbuffer.data(), newlen, format, args...);
-        return std::string(newbuffer.data());
+    if (length > len) {  // alloc from heap when def buf insufficient
+        vector<char> buf(length);
+        snprintf(buf.data(), length, format, args...);
+        return string(buf.data());
     }
 
     return buffer;
 }
 
 void show_fields(vector<string> &fields) {
+    if (!DEBUG) return;
+
     size_t n = 0;
     cout << "\t@@@>[FIELDS] ";
     for (string val: fields) {
@@ -51,84 +76,158 @@ void show_fields(vector<string> &fields) {
 /*--- Class to analyze, store and output field information ---*/
 class PrInfo {
 public:
-    PrInfo():transfer_times(0), pingpong_times(0) {}
+    PrInfo():_transfer_times(0), _pingpong_times(0) {}
 
     PrInfo(vector<string>& fields) {
-        cout << "###Within PrInfo: " << endl;
         show_fields(fields);
 
-        this->pr_id         = fields[0];
-        this->gic           = fields[4];
-        this->rpt_date      = fields[3];
-        this->author        = fields[11];
-        this->author_grp    = fields[12];
-        this->state         = fields[6];
-        this->attached_prs  = fields[13];
+        this->_pr_id         = fields[0];
+        this->_gic           = fields[4];
+        this->_rpt_date      = fields[3];
+        this->_author        = fields[11];
+        this->_author_grp    = fields[12];
+        this->_state         = fields[6];
+        this->_attached_prs  = fields[13];
 
-        analyse_rev_his(fields[15]);
+        analyze_transfer(fields[15]);
         analyse_attach();
 
-        this->jsonize(cout);
-        cout << "###Within PrInfo###" << endl;
+        if (DEBUG) this->jsonize(cout);
     }
 
     void jsonize(ostream& out) const {
         out << setw(4) << " " << "{\n";
         //out.setf(ios::unitbuf);
 
-        jsonize_field(out, "PR ID", this->pr_id, true);
-        jsonize_field(out, "Group In Charge", this->gic);
-        jsonize_field(out, "Reported Date", this->rpt_date);
-        jsonize_field(out, "Author", this->author);
-        jsonize_field(out, "Author Group", this->author_grp);
-        jsonize_field(out, "State", this->state);
+        jsonize_field(out, "PR ID",             this->_pr_id, true);
+        jsonize_field(out, "Group In Charge",   this->_gic);
+        jsonize_field(out, "Reported Date",     this->_rpt_date);
+        jsonize_field(out, "Author",            this->_author);
+        jsonize_field(out, "Author Group",      this->_author_grp);
+        jsonize_field(out, "State",             this->_state);
 
-        jsonize_field(out, "Transfer Path", this->transfer_path);
-        jsonize_field(out, "Transfer times", this->transfer_times);
-        jsonize_field(out, "Solving Path", this->solving_path);
-        jsonize_field(out, "Pingpong times", this->pingpong_times);
+        jsonize_field(out, "Transfer Path",     this->_transfer_path);
+        jsonize_field(out, "Transfer times",    this->_transfer_times);
+        jsonize_field(out, "Solving Path",      this->_solving_path);
+        jsonize_field(out, "Pingpong times",    this->_pingpong_times);
 
-        jsonize_field(out, "Attached PRs", this->attached_prs);
-        jsonize_field(out, "Attached", this->attached);
-        jsonize_field(out, "Attached To", this->attached_to);
+        jsonize_field(out, "Attached PRs",      this->_attached_prs);
+        jsonize_field(out, "Attached",          this->_attached);
+        jsonize_field(out, "Attached To",       this->_attached_to);
 
         out << "\n" << setw(4) << " " << "}";
     }
 
 private:
     // Analyze revision history to get Transfer/Solving Path & Transfer/Pingpong times
-    void analyse_rev_his(string& revision) {
+    void analyze_transfer(string& revision) {
         string pattern = "The group in charge changed from ([[:upper:]_[:digit:]]+) to ([[:upper:]_[:digit:]]+)";
         regex r(pattern);
 
         bool first = true;
         string last_group;
         for(sregex_iterator it(revision.begin(), revision.end(), r), end_it; it != end_it; ++it) {
-            cout << "###Groups###" << it->format("$1") << "->" << it->format("$2") << endl;
+            //cout << "@Transfer" << it->format("$1") << "->" << it->format("$2") << endl;
             if (first) {
-                transfer_path.push_back(it->format("$2"));
-                transfer_path.push_back(it->format("$1"));
+                _transfer_path.push_back(it->format("$2"));
+                _transfer_path.push_back(it->format("$1"));
                 first = false;
             } else {
                 if (0 != last_group.compare(it->format("$2")))
-                    transfer_path.push_back(it->format("$2"));
+                    _transfer_path.push_back(it->format("$2"));
 
-                transfer_path.push_back(it->format("$1"));
+                _transfer_path.push_back(it->format("$1"));
             }
             last_group = it->format("$1");
         }
 
-        std::reverse(transfer_path.begin(),transfer_path.end());
-        transfer_times = transfer_path.size();
+        if (_transfer_path.empty()) {
+            _transfer_path.push_back(this->_gic);
+            _solving_path.push_back(this->_gic);
 
-        solving_path = transfer_path;   //TODO
-        pingpong_times = 0;
-        jsonize_field(cout, "@@path: ", transfer_path);//for dbg
+            _transfer_times = 1;
+            _pingpong_times = 0;
+        } else {
+            reverse(_transfer_path.begin(),_transfer_path.end());
+            _transfer_times = _transfer_path.size();
+
+            analyze_pingpong();
+        }
+
+        if (DEBUG) jsonize_field(cout, "@@path:\n", _transfer_path);
+    }
+
+    void analyse_resolving_path(map<string, size_t>& last_pingpong) {
+        string terminator = _transfer_path.back();
+        vector<string>::iterator it_beg = _transfer_path.begin();
+        vector<string>::iterator it_end = find(_transfer_path.begin(), _transfer_path.end(), terminator);
+
+        size_t pos = 0;
+        size_t next = 0;
+        for (vector<string>::iterator it = _transfer_path.begin(); it <= it_end;) {
+            string path = *it;
+            if (0 == terminator.compare(path)) {
+                _solving_path.push_back(path);
+                break;
+            }
+
+            if (last_pingpong.find(path) != last_pingpong.end()) {
+                if (last_pingpong[path] > next) {
+                    next = last_pingpong[path];
+                    _solving_path.push_back(path);
+                }
+            } else {
+                if (0 == next || pos > next)
+                    _solving_path.push_back(path);
+            }
+            ++it;
+            ++pos;
+        }
+
+        cout << "\n@Solving path:" << endl;
+        for (string path: _solving_path)
+            cout << path << endl;
+    }
+
+    // TODO: normalize path names
+    void analyze_pingpong() {
+        size_t pos = 0;
+        _pingpong_times = 0;
+
+        set<string> path_set;
+        map<string, size_t> last_pingpong;  // the last occurrence (0-based) where a group pingpongs in trs path
+
+        vector<string>::iterator it;
+        set<string>::iterator iter;
+        string path;
+        for (it = _transfer_path.begin(); it != _transfer_path.end();) {
+            path = *it;
+            if (path_set.empty()) {
+                path_set.insert(path);
+            } else {
+                iter = path_set.find(path);
+                if (iter != path_set.end()) {
+                    ++_pingpong_times;
+                    last_pingpong[path] = pos;  // insert or update
+                } else {
+                    path_set.insert(path);
+                }
+            }
+            ++it;
+            ++pos;
+        }
+
+        cout << "\n@Pingpong:" << _pingpong_times << endl;
+        for (const auto &pair : last_pingpong) {
+            std::cout << pair.first << ": " << pair.second << '\n';
+        }
+
+        analyse_resolving_path(last_pingpong);
     }
 
     void analyse_attach() {
-        this->attached = "no";
-        this->attached_to = "";
+        this->_attached = "no";
+        this->_attached_to = "";
     }
 
     void jsonize_field(ostream& out, const string key, const string value, bool first = false) const {
@@ -159,22 +258,22 @@ private:
     }
 
 private:
-    string pr_id;
-    string gic;
-    string rpt_date;
-    string author;
-    string author_grp;
-    string state;
+    string _pr_id;
+    string _gic;
+    string _rpt_date;
+    string _author;
+    string _author_grp;
+    string _state;
 
-    vector<string> transfer_path;
-    vector<string> solving_path;
+    vector<string> _transfer_path;
+    vector<string> _solving_path;
 
-    size_t transfer_times;
-    size_t pingpong_times;
+    size_t _transfer_times;
+    size_t _pingpong_times;
 
-    string attached_prs;
-    string attached;
-    string attached_to;
+    string _attached_prs;
+    string _attached;
+    string _attached_to;
 };
 
 /*--- CSV file Parser ---*/
@@ -192,7 +291,7 @@ public:
 
 private:
     bool save(vector<string>& fields);
-    void parse_str(const string& str, vector<string>& fields, bool righAfterQuotation = false);
+    inline void parse_str(const string& str, vector<string>& fields, bool righAfterQuotation = false);
 
     template<typename Out>
     void split(const string &s, Out result, char delim = CSV_DELIMITER) const;
@@ -208,7 +307,7 @@ private:
     vector<PrInfo*> _pr_list;
 };
 
-//===============================================================================
+/* --- CsvParser class implementation ---*/
 void CsvParser::jsonize(ostream& out) const {
     jsonize_start(out);
 
@@ -256,7 +355,7 @@ void CsvParser::parse(string& csv_fname) {
             continue;
         }
 
-        cout << "\n\nParse line: " << line << endl;
+        if (DEBUG) cout << "\n\nParse line: " << line << endl;
         parse_str(line, fields);
     }
 }
@@ -272,7 +371,7 @@ void CsvParser::split(const string &s, Out result, char delim) const {
 
 bool CsvParser::save(vector<string> &fields) {
     if (fields.size() != EXPORT_FIELD_NUM) {
-        cout << "ERROR: failed to parse out correct field number!" << endl;
+        cerr << "ERROR: failed to parse out correct field number!" << endl;
         return false;
     }
 
@@ -286,7 +385,7 @@ bool CsvParser::save(vector<string> &fields) {
 
 // recursively parse a string to exact fields
 void CsvParser::parse_str(const string &str, vector<string>& fields, bool righAfterQuotation) {
-    cout << "\t@Handle " << ((state == CSVState::UnquotedField) ? "unquoted": "quoted") << "string: " << str.substr(0, 50) << "..." << endl;
+    if (DEBUG) cout << "\t@Handle " << ((state == CSVState::UnquotedField) ? "unquoted": "quoted") << "string: " << str.substr(0, 50) << "..." << endl;
     size_t pos = str.find_first_of('"');
     if (string::npos == pos) {
         if (state == CSVState::UnquotedField) {
@@ -315,7 +414,7 @@ void CsvParser::parse_str(const string &str, vector<string>& fields, bool righAf
         } else {
             if (str.size() > pos + 4 && str[pos+1] == '"') { // double quote, parse to end of it
                 size_t p = str.find("\"\"", pos+2);
-                cout << "######### DOUBLE QUOTATION #########" << pos << "|" << p << endl;
+                if (DEBUG) cout << "@DOUBLE QUOTATION: " << pos << "|" << p << endl;
                 if (string::npos != p) {
                     if (righAfterQuotation) {
                         fields.push_back(str.substr(0, p+2));
@@ -324,7 +423,7 @@ void CsvParser::parse_str(const string &str, vector<string>& fields, bool righAf
                     }
                     parse_str(str.substr(p+2), fields, righAfterQuotation);
                 } else {
-                    cout << "ERROR: no match double quotation mark at same line" << endl;
+                    cerr << "ERROR: no match double quotation mark at same line" << endl;
                     return;
                 }
             } else {
@@ -360,16 +459,14 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-//    jsonize_field(cout, "TEST", "TEST-VALUE");
-//    return 0;
-
     string csv_fname(argv[1]);
-    string json_fname = csv_fname.substr(0, csv_fname.find_last_of('.')) + "_result_my.json";
 
     CsvParser parser;
     parser.parse(csv_fname);
-    //parser.jsonize(cout);
+//    parser.jsonize(cout);
+//    return 0;
 
+    string json_fname = csv_fname.substr(0, csv_fname.find_last_of('.')) + "_result_my.json";
     ofstream json_file(json_fname);
     parser.jsonize(json_file);
     json_file.close();
