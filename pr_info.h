@@ -15,12 +15,15 @@ public:
 
     void jsonize(ostream& out) const;
 
-private:
+//private:
     void analyze_transfer(string& revision);
     void analyse_resolving_path(map<string, size_t>& last_pingpong);
     void analyze_pingpong();
     void analyse_attach();
 
+    // tool methods
+    int id_compare(string& s1, string& s2) const;
+    int get_pr_id(string str) const;
 
     void jsonize_field(ostream& out, const string key, const string value, bool first = false) const;
     void jsonize_field(ostream& out, const string& key, size_t value, bool first = false) const;

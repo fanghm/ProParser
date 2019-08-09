@@ -160,9 +160,33 @@ void PrInfo::analyze_pingpong() {
     analyse_resolving_path(last_pingpong);
 }
 
+int PrInfo::id_compare(string& s1, string& s2) const {
+    return get_pr_id(s1) - get_pr_id(s2);
+}
+
+// PR example: PR349542, CAS-193006-F8T7
+int PrInfo::get_pr_id(string str) const {
+    const string pr_id_pattern = "^(?:PR|CAS-)(\\d{6})(?:$|-.{4}$)";
+    const regex pr_regex(pr_id_pattern);
+    smatch id_match;
+    if (regex_match(str, id_match, pr_regex)) {
+        cout << "get_pr_id: " << str << "|" << id_match[1].str() << endl;
+        return stoi(id_match[1].str());
+    } else {
+        cout << "No match!" << endl;
+        return 0;
+    }
+}
+
 void PrInfo::analyse_attach() {
     this->_attached = "no";
     this->_attached_to = "";
+    if (0 != _attached_prs.compare(NO_ATTACHED_PR)) {
+        if (id_compare(_pr_id, _attached_prs) > 0) {
+            this->_attached = "yes";
+            this->_attached_to = _attached_prs;
+        }
+    }
 }
 
 void PrInfo::jsonize_field(ostream& out, const string key, const string value, bool first) const {

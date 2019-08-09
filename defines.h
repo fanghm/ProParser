@@ -6,6 +6,7 @@
 
 using namespace std;
 
+const string NO_ATTACHED_PR = "< empty >";
 const string EXPORT_FIELDS[] = {
     "Problem ID",       //0: PR ID
     "Title",
@@ -29,18 +30,17 @@ const string EXPORT_FIELDS[] = {
 const size_t EXPORT_FIELD_NUM = sizeof(EXPORT_FIELDS) / sizeof(string);    //17
 
 const string TEST_SAMPLES[] = {
-    "../Sample/problem-1_no-transfer-no-attach.csv",
-    "../Sample/problem-1_simple.csv",
-    "../Sample/problem-2_transfer-without-pingpong-no-attach.csv",
-    "../Sample/problem-3_transfer-with-pingpong-no-attach.csv",
-    "../Sample/problem-4_many-transfers-no-attach.csv",
+//    "../Sample/problem-1_no-transfer-no-attach.csv",
+//    "../Sample/problem-1_simple.csv",
+//    "../Sample/problem-2_transfer-without-pingpong-no-attach.csv",
+//    "../Sample/problem-3_transfer-with-pingpong-no-attach.csv",
+//    "../Sample/problem-4_many-transfers-no-attach.csv",
     "../Sample/problem-5_attached-no-transfer-no-dangling.csv",
     "../Sample/problem-6_attach-no-transfer-with-dangling-references.csv",
     "../Sample/problem-7_attached-with-transfer-no-pingpong.csv",
     "../Sample/problem-8_attached-with-transfer-pingpong-exist-for-sure.csv",
     "../Sample/problem-9_attached-pingpong-combined.csv"
 };
-
 
 template <typename ...Args>
 inline string format_string(const char* format, Args... args) {
